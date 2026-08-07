@@ -1,6 +1,14 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+
+const BRIDGE_URL = "http://127.0.0.1:4173";
+
+type BridgeState = "checking" | "online" | "offline";
+type Job = {
+  id:string; status:string; current:string; completedReports:number; collectedRows:number;
+  error:string|null; estimate:{reportRequests:number; estimatedRows:number; estimatedDays:number; estimatedActiveHours:number};
+};
 
 const SEGMENTS = [
   ["2W","Two wheelers",8],["3W","Three wheelers",5],["4W","Four wheelers",9],
@@ -32,7 +40,12 @@ export default function Home() {
   const [startPeriod,setStartPeriod] = useState(8);
   const [endYear,setEndYear] = useState(now.getFullYear());
   const [endPeriod,setEndPeriod] = useState(7);
+  const [output,setOutput] = useState<"xlsx"|"csv"|"pdf">("xlsx");
   const [consent,setConsent] = useState(false);
+  const [bridge,setBridge] = useState<BridgeState>("checking");
+  const [bridgeMessage,setBridgeMessage] = useState("Checking the local Edge collector…");
+  const [job,setJob] = useState<Job|null>(null);
+  const [starting,setStarting] = useState(false);
 
   const estimate = useMemo(() => {
     const maxPeriod = mode === "month" ? 12 : 4;
@@ -49,18 +62,85 @@ export default function Home() {
     if (!rtos) errors.push("Select at least one state.");
     if (!periodCount) errors.push("The timeline end must follow its start.");
     if (rows > 100000) errors.push(`Estimated output is ${format(rows)} rows; the hard limit is 1,00,000.`);
+    if (output === "pdf" && rows > 2000) errors.push("PDF is limited to 2,000 detail rows. Choose XLSX/CSV or narrow the scope.");
     return {rows,rtos,reports,days:Math.max(1,Math.ceil(reports/80)),hours:(reports*60/3600).toFixed(1),errors};
-  },[segments,breakdown,allStates,states,mode,startYear,startPeriod,endYear,endPeriod]);
+  },[segments,breakdown,allStates,states,mode,startYear,startPeriod,endYear,endPeriod,output]);
 
   const toggle = (value:string,list:string[],set:(v:string[])=>void) => set(list.includes(value)?list.filter(x=>x!==value):[...list,value]);
   const allowed = !estimate.errors.length && consent;
   const periods = mode === "month" ? ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"] : ["Q1","Q2","Q3","Q4"];
   const years = Array.from({length:16},(_,i)=>now.getFullYear()-i);
+  const config = () => ({segments,breakdown,states:allStates?["ALL"]:states,periodMode:mode,startYear,startPeriod,endYear,endPeriod,output,minDelaySeconds:45,maxDailyReports:80,consent:true});
   const downloadPlan = () => {
-    const config = {segments,breakdown,states:allStates?["ALL"]:states,periodMode:mode,startYear,startPeriod,endYear,endPeriod,output:"xlsx",minDelaySeconds:45,maxDailyReports:80,consent:true,estimatedRows:estimate.rows};
-    const url = URL.createObjectURL(new Blob([JSON.stringify(config,null,2)],{type:"application/json"}));
+    const plan = {...config(),estimatedRows:estimate.rows};
+    const url = URL.createObjectURL(new Blob([JSON.stringify(plan,null,2)],{type:"application/json"}));
     const a=document.createElement("a"); a.href=url; a.download="vaahan-safe-job.json"; a.click(); URL.revokeObjectURL(url);
   };
+
+  const checkBridge = async () => {
+    setBridge("checking");
+    setBridgeMessage("Checking the local Edge collector…");
+    try {
+      const response = await fetch(`${BRIDGE_URL}/api/health`,{cache:"no-store"});
+      if (!response.ok) throw new Error("Collector health check failed");
+      setBridge("online");
+      setBridgeMessage("Local Edge collector connected and ready.");
+      return true;
+    } catch {
+      setBridge("offline");
+      setBridgeMessage("Collector not detected. Run start.ps1, then allow local-network access in Edge if asked.");
+      return false;
+    }
+  };
+
+  const refreshJob = async (id:string) => {
+    try {
+      const response = await fetch(`${BRIDGE_URL}/api/jobs/${id}`,{cache:"no-store"});
+      if (!response.ok) throw new Error("Unable to read job");
+      setJob(await response.json());
+      setBridge("online");
+    } catch {
+      setBridge("offline");
+      setBridgeMessage("Connection to the local collector was lost. Keep start.ps1 running and reconnect.");
+    }
+  };
+
+  const startCollection = async () => {
+    if (!allowed || starting) return;
+    setStarting(true);
+    setBridgeMessage("Sending the approved plan to your local collector…");
+    try {
+      const response = await fetch(`${BRIDGE_URL}/api/jobs`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(config())});
+      const data = await response.json().catch(()=>({}));
+      if (!response.ok) throw new Error(data.error || "The collector could not start this job.");
+      setJob(data);
+      setBridge("online");
+      setBridgeMessage("Collection started. A visible Microsoft Edge window should open shortly.");
+    } catch (error) {
+      setBridge("offline");
+      setBridgeMessage(error instanceof Error && !error.message.includes("fetch") ? error.message : "Collector not detected. Run start.ps1, then allow local-network access in Edge if asked.");
+    } finally { setStarting(false); }
+  };
+
+  const stopJob = async () => {
+    if (!job) return;
+    const response = await fetch(`${BRIDGE_URL}/api/jobs/${job.id}/stop`,{method:"POST"});
+    if (response.ok) setJob(await response.json());
+  };
+
+  const resumeJob = async () => {
+    if (!job) return;
+    const response = await fetch(`${BRIDGE_URL}/api/jobs/${job.id}/resume`,{method:"POST"});
+    const data = await response.json().catch(()=>({}));
+    if (response.ok) setJob(data); else setBridgeMessage(data.error || "This job could not be resumed.");
+  };
+
+  useEffect(()=>{ void checkBridge(); },[]);
+  useEffect(()=>{
+    if (!job || !["starting","running"].includes(job.status)) return;
+    const timer=window.setInterval(()=>void refreshJob(job.id),4000);
+    return ()=>window.clearInterval(timer);
+  },[job?.id,job?.status]);
 
   return <>
     <header className="topbar"><a className="brand" href="#top"><span className="brandMark">V</span><span className="brandCopy">Vaahan Safe Data Collector<small>REGISTRATION INTELLIGENCE SYSTEM</small></span></a><nav><a href="#builder">Planner</a><a href="#method">Architecture</a><a href="#limits">Protocol</a></nav><div className="systemStatus"><i/>SYSTEM ONLINE</div></header>
@@ -71,8 +151,12 @@ export default function Home() {
         <div className="formGrid">
           <fieldset><legend><span>01</span> Vehicle scope</legend><p className="hint">Choose dashboard category groups.</p><div className="choices">{SEGMENTS.map(s=><label className="choice" key={s[0]}><input type="checkbox" checked={segments.includes(s[0])} onChange={()=>toggle(s[0],segments,setSegments)}/><span>{s[1]}</span></label>)}</div><label className="field">Break rows down by<select value={breakdown} onChange={e=>setBreakdown(e.target.value)}>{BREAKDOWNS.map(b=><option value={b[0]} key={b[0]}>{b[1]}</option>)}</select><small>Vehicle model is not exposed by the public report; maker is the closest available detail.</small></label></fieldset>
           <fieldset><legend><span>02</span> Geography</legend><p className="hint">All India covers approximately 1,465 public reporting offices.</p><label className="toggle"><input type="checkbox" checked={allStates} onChange={e=>setAllStates(e.target.checked)}/><span><b>All India · all RTOs</b><small>Use state selection only to narrow the workload</small></span></label>{!allStates&&<div className="states">{STATES.map(s=><label key={s[0]}><input type="checkbox" checked={states.includes(s[0])} onChange={()=>toggle(s[0],states,setStates)}/>{s[1]} ({s[2]})</label>)}</div>}</fieldset>
-          <fieldset><legend><span>03</span> Timeline</legend><div className="two"><label className="field">Time grain<select value={mode} onChange={e=>{const m=e.target.value as "month"|"quarter";setMode(m);setStartPeriod(1);setEndPeriod(m==="month"?12:4)}}><option value="month">Month</option><option value="quarter">Quarter</option></select></label><label className="field">Preferred export<select><option>Excel (.xlsx)</option><option>CSV (.csv)</option><option>PDF (.pdf, up to 2,000 rows)</option></select></label></div><div className="four"><label className="field">Start year<select value={startYear} onChange={e=>setStartYear(+e.target.value)}>{years.map(y=><option key={y}>{y}</option>)}</select></label><label className="field">Start<select value={startPeriod} onChange={e=>setStartPeriod(+e.target.value)}>{periods.map((p,i)=><option value={i+1} key={p}>{p}</option>)}</select></label><label className="field">End year<select value={endYear} onChange={e=>setEndYear(+e.target.value)}>{years.map(y=><option key={y}>{y}</option>)}</select></label><label className="field">End<select value={endPeriod} onChange={e=>setEndPeriod(+e.target.value)}>{periods.map((p,i)=><option value={i+1} key={p}>{p}</option>)}</select></label></div></fieldset>
-          <fieldset className="review"><legend><span>04</span> Review & download</legend><div className="metrics"><div><b>{format(estimate.rows)}</b><small>estimated rows</small></div><div><b>{format(estimate.rtos)}</b><small>RTOs in scope</small></div><div><b>{format(estimate.reports)}</b><small>dashboard reports</small></div><div><b>{estimate.days}</b><small>minimum days · ≈{estimate.hours}h</small></div></div>{estimate.errors.length?<div className="warning blocked">{estimate.errors.map(e=><p key={e}>{e}</p>)}</div>:<div className="warning">Conservative estimate. Availability can vary across Vaahan states and RTOs.</div>}<label className="consent"><input type="checkbox" checked={consent} onChange={e=>setConsent(e.target.checked)}/><span>I understand registrations are a sales proxy and the collector must stop on CAPTCHA, rate limits or access challenges.</span></label><button className="button primary wide" disabled={!allowed} onClick={downloadPlan}>Download free collector configuration</button><a className="localLink" href="http://127.0.0.1:4173">Already running the collector? Open local control room →</a></fieldset>
+          <fieldset><legend><span>03</span> Timeline</legend><div className="two"><label className="field">Time grain<select value={mode} onChange={e=>{const m=e.target.value as "month"|"quarter";setMode(m);setStartPeriod(1);setEndPeriod(m==="month"?12:4)}}><option value="month">Month</option><option value="quarter">Quarter</option></select></label><label className="field">Preferred export<select value={output} onChange={e=>setOutput(e.target.value as "xlsx"|"csv"|"pdf")}><option value="xlsx">Excel (.xlsx)</option><option value="csv">CSV (.csv)</option><option value="pdf">PDF (.pdf, up to 2,000 rows)</option></select></label></div><div className="four"><label className="field">Start year<select value={startYear} onChange={e=>setStartYear(+e.target.value)}>{years.map(y=><option key={y}>{y}</option>)}</select></label><label className="field">Start<select value={startPeriod} onChange={e=>setStartPeriod(+e.target.value)}>{periods.map((p,i)=><option value={i+1} key={p}>{p}</option>)}</select></label><label className="field">End year<select value={endYear} onChange={e=>setEndYear(+e.target.value)}>{years.map(y=><option key={y}>{y}</option>)}</select></label><label className="field">End<select value={endPeriod} onChange={e=>setEndPeriod(+e.target.value)}>{periods.map((p,i)=><option value={i+1} key={p}>{p}</option>)}</select></label></div></fieldset>
+          <fieldset className="review"><legend><span>04</span> Review & run</legend><div className="metrics"><div><b>{format(estimate.rows)}</b><small>estimated rows</small></div><div><b>{format(estimate.rtos)}</b><small>RTOs in scope</small></div><div><b>{format(estimate.reports)}</b><small>dashboard reports</small></div><div><b>{estimate.days}</b><small>minimum days · ≈{estimate.hours}h</small></div></div>{estimate.errors.length?<div className="warning blocked">{estimate.errors.map(e=><p key={e}>{e}</p>)}</div>:<div className="warning">Conservative estimate. Availability can vary across Vaahan states and RTOs.</div>}
+            <div className={`bridgeStatus ${bridge}`}><span><i/>LOCAL EDGE BRIDGE</span><b>{bridge==="checking"?"CHECKING":bridge==="online"?"CONNECTED":"NOT CONNECTED"}</b><p>{bridgeMessage}</p>{bridge==="offline"&&<button type="button" onClick={()=>void checkBridge()}>RECHECK CONNECTION</button>}</div>
+            <label className="consent"><input type="checkbox" checked={consent} onChange={e=>setConsent(e.target.checked)}/><span>I understand registrations are a sales proxy and the collector must stop on CAPTCHA, rate limits or access challenges.</span></label><button className="button primary wide" disabled={!allowed||starting} onClick={()=>void startCollection()}>{starting?"Starting Edge collector…":"Start safe Edge collection"}</button><button className="button secondary wide" type="button" onClick={downloadPlan}>Download configuration only</button><p className="bridgeHint">First use: run <strong>start.ps1</strong> from the collector folder and keep its window open. Edge may ask you to allow local-network access.</p><a className="localLink" href={BRIDGE_URL}>Open local control room →</a>
+            {job&&<div className="jobMonitor" aria-live="polite"><div className="jobTitle"><span>ACTIVE JOB / {job.id}</span><b>{job.status.toUpperCase()}</b></div><p>{job.current||"Preparing collection…"}</p><div className="progressTrack"><i style={{width:`${Math.min(100,Math.round((job.completedReports/Math.max(1,job.estimate.reportRequests))*100))}%`}}/></div><div className="jobStats"><span><b>{format(job.completedReports)}</b> / {format(job.estimate.reportRequests)} reports</span><span><b>{format(job.collectedRows)}</b> rows collected</span></div>{job.error&&<div className="jobError">{job.error}</div>}<div className="jobActions">{["starting","running"].includes(job.status)&&<button type="button" onClick={()=>void stopJob()}>STOP SAFELY</button>}{["paused","stopped"].includes(job.status)&&<button type="button" onClick={()=>void resumeJob()}>RESUME</button>}<a href={`${BRIDGE_URL}/api/jobs/${job.id}/export?format=${output}`}>DOWNLOAD {output.toUpperCase()}</a></div></div>}
+          </fieldset>
         </div>
       </section>
 

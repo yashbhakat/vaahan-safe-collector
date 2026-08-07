@@ -11,4 +11,4 @@ export const metadata: Metadata = {
   twitter: { card:"summary_large_image", title:"Vaahan Safe Data Collector", description:"Free responsible Vaahan collection planner.", images:["/vaahan-safe-collector/og.png"] },
 };
 
-export default function RootLayout({children}:{children:React.ReactNode}) { return <html lang="en"><body>{children}</body></html>; }
+export default function RootLayout({children}:{children:React.ReactNode}) { return <html lang="en"><head><meta httpEquiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' http://127.0.0.1:4173; object-src 'none'; base-uri 'none'; form-action 'none'"/><meta name="referrer" content="no-referrer"/></head><body>{children}</body></html>; }

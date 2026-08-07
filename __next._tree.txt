@@ -1,2 +1,2 @@
-:HL["/vaahan-safe-collector/_next/static/chunks/0.e.zucnl8fzf.css","style"]
-0:{"tree":{"name":"","param":null,"prefetchHints":16,"slots":{"children":{"name":"__PAGE__","param":null,"prefetchHints":0,"slots":null}}},"staleTime":300,"buildId":"a0iqlTC7d6i2wBPRgz6rH"}
+:HL["/vaahan-safe-collector/_next/static/chunks/0ib_i3d7lu-r-.css","style"]
+0:{"tree":{"name":"","param":null,"prefetchHints":16,"slots":{"children":{"name":"__PAGE__","param":null,"prefetchHints":0,"slots":null}}},"staleTime":300,"buildId":"o6sMJuKLc8KaqjGuFUG-N"}

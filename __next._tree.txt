@@ -1,2 +1,2 @@
 :HL["/vaahan-safe-collector/_next/static/chunks/184xbn0wdvn_8.css","style"]
-0:{"tree":{"name":"","param":null,"prefetchHints":16,"slots":{"children":{"name":"__PAGE__","param":null,"prefetchHints":0,"slots":null}}},"staleTime":300,"buildId":"fXJCOHK7mLzEVDe1sFb6j"}
+0:{"tree":{"name":"","param":null,"prefetchHints":16,"slots":{"children":{"name":"__PAGE__","param":null,"prefetchHints":0,"slots":null}}},"staleTime":300,"buildId":"xdhZRxkCsPigQZRxGBz-U"}

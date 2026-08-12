@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Image from "next/image";
 
 const BRIDGE_URL = "http://127.0.0.1:4173";
@@ -64,6 +64,9 @@ export default function Home() {
   const [job,setJob] = useState<Job|null>(null);
   const [starting,setStarting] = useState(false);
   const [annexureOpen,setAnnexureOpen] = useState(false);
+  const [autoDownload,setAutoDownload] = useState(true);
+  const [downloadNotice,setDownloadNotice] = useState("");
+  const automaticDownloads = useRef(new Set<string>());
 
   const pace = speed === "balanced"
     ? {min:30,max:45,daily:100,label:"Balanced"}
@@ -100,18 +103,19 @@ export default function Home() {
     const a=document.createElement("a"); a.href=url; a.download="vaahan-safe-job.json"; a.click(); URL.revokeObjectURL(url);
   };
 
-  const checkBridge = async () => {
+  const checkBridge = async (codeOverride?:string) => {
     setBridge("checking");
     setBridgeMessage("Checking the secure local collector…");
     try {
       const response = await fetch(`${BRIDGE_URL}/api/health`,{cache:"no-store"});
       if (!response.ok) throw new Error("Collector health check failed");
-      const normalizedCode = normalizePairingCode(pairingCode);
+      const normalizedCode = normalizePairingCode(codeOverride || pairingCode);
       if (normalizedCode.length !== 8) throw new Error("Companion detected. Enter the pairing code shown in the local control room.");
       const sessionResponse = await fetch(`${BRIDGE_URL}/api/session`,{cache:"no-store",headers:{"X-Collector-Pairing-Code":normalizedCode}});
       const sessionError = await sessionResponse.clone().json().catch(()=>({}));
       if (!sessionResponse.ok) throw new Error(sessionError.error || "Secure pairing could not be established");
       const session = await sessionResponse.json();
+      setPairingCode(formatPairingCode(normalizedCode));
       setBridgeToken(session.token);
       setBridge("online");
       setBridgeMessage("Secure local collector connected. Edge and Chrome are available.");
@@ -140,6 +144,7 @@ export default function Home() {
   const startCollection = async () => {
     if (!allowed || starting) return;
     setStarting(true);
+    setDownloadNotice("");
     setBridgeMessage("Sending the approved plan to your local collector…");
     try {
       const token = bridgeToken || await checkBridge();
@@ -169,15 +174,22 @@ export default function Home() {
     if (response.ok) setJob(data); else setBridgeMessage(data.error || "This job could not be resumed.");
   };
 
-  const downloadExport = async (format:"xlsx"|"csv"|"pdf") => {
+  const downloadExport = async (format:"xlsx"|"csv"|"pdf", automatic=false) => {
     if (!job || !bridgeToken) return;
+    setDownloadNotice(`${automatic?"Collection complete. ":""}Preparing your ${format.toUpperCase()} data fileâ€¦`);
     const response = await fetch(`${BRIDGE_URL}/api/jobs/${job.id}/export?format=${format}`,{headers:{"X-Collector-Token":bridgeToken}});
-    if (!response.ok) { const data=await response.json().catch(()=>({})); setBridgeMessage(data.error||"Export failed."); return; }
+    if (!response.ok) { const data=await response.json().catch(()=>({})); setDownloadNotice(data.error||"Export failed. Use the manual download button to try again."); return; }
     const url=URL.createObjectURL(await response.blob()); const anchor=document.createElement("a"); anchor.href=url; anchor.download=`vaahan-${job.id}.${format}`; anchor.click(); URL.revokeObjectURL(url);
+    setDownloadNotice(`Your ${format.toUpperCase()} data file was sent to the browser's Downloads folder.`);
   };
 
   useEffect(()=>{
-    const timer=window.setTimeout(()=>void checkBridge(),0);
+    const fragment = new URLSearchParams(window.location.hash.slice(1));
+    const handedOffCode = normalizePairingCode(fragment.get("pair") || "");
+    if (handedOffCode) {
+      window.history.replaceState(null,"",`${window.location.pathname}${window.location.search}`);
+    }
+    const timer=window.setTimeout(()=>void checkBridge(handedOffCode || undefined),0);
     return ()=>window.clearTimeout(timer);
     // The initial connection check intentionally runs once; later checks are user-driven.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -195,6 +207,16 @@ export default function Home() {
     // The interval is recreated when the active job or session changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   },[job?.id,job?.status,bridgeToken]);
+  useEffect(()=>{
+    if (!autoDownload || job?.status!=="complete" || !bridgeToken || !job.collectedRows) return;
+    const key=`${job.id}:${output}`;
+    if (automaticDownloads.current.has(key)) return;
+    automaticDownloads.current.add(key);
+    const timer=window.setTimeout(()=>void downloadExport(output,true),0);
+    return ()=>window.clearTimeout(timer);
+    // A completed job is exported once per selected format; manual download remains available.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[autoDownload,job?.id,job?.status,job?.collectedRows,bridgeToken,output]);
 
   return <>
     <header className="topbar"><a className="brand" href="#top"><span className="brandMark">V</span><span className="brandCopy">Vaahan Safe Data Collector<small>REGISTRATION INTELLIGENCE SYSTEM</small></span></a><nav><a href="#builder">Planner</a><a href="#process">Process</a><a href="#downloads">Downloads</a><a href="#limits">Protocol</a></nav><div className="systemStatus"><i/>PLANNER ONLINE</div></header>
@@ -208,13 +230,13 @@ export default function Home() {
           <fieldset><legend><span>03</span> Timeline & runtime</legend><div className="two"><label className="field">Time grain<select value={mode} onChange={e=>{const m=e.target.value as "month"|"quarter";setMode(m);setStartPeriod(1);setEndPeriod(m==="month"?12:4)}}><option value="month">Month</option><option value="quarter">Quarter</option></select></label><label className="field">Preferred export<select value={output} onChange={e=>setOutput(e.target.value as "xlsx"|"csv"|"pdf")}><option value="xlsx">Excel (.xlsx)</option><option value="csv">CSV (.csv)</option><option value="pdf">PDF (.pdf, up to 2,000 rows)</option></select></label></div><div className="two"><label className="field">Installed browser<select value={browserChoice} onChange={e=>setBrowserChoice(e.target.value as "edge"|"chrome")}><option value="edge">Microsoft Edge</option><option value="chrome">Google Chrome</option></select></label><label className="field">Execution mode<select value={background?"background":"visible"} onChange={e=>setBackground(e.target.value==="background")}><option value="background">Minimized background (recommended)</option><option value="visible">Visible troubleshooting</option></select><small>A normal browser is minimized; access challenges still pause the job.</small></label></div><label className="field">Collection pace<select value={speed} onChange={e=>setSpeed(e.target.value as "balanced"|"conservative")}><option value="balanced">Balanced · 30–45 seconds · 100 reports/day</option><option value="conservative">Conservative · 45–75 seconds · 80 reports/day</option></select><small>Balanced shortens the average pause by about 37% while keeping one report request at a time.</small></label><div className="four"><label className="field">Start year<select value={startYear} onChange={e=>setStartYear(+e.target.value)}>{years.map(y=><option key={y}>{y}</option>)}</select></label><label className="field">Start<select value={startPeriod} onChange={e=>setStartPeriod(+e.target.value)}>{periods.map((p,i)=><option value={i+1} key={p}>{p}</option>)}</select></label><label className="field">End year<select value={endYear} onChange={e=>setEndYear(+e.target.value)}>{years.map(y=><option key={y}>{y}</option>)}</select></label><label className="field">End<select value={endPeriod} onChange={e=>setEndPeriod(+e.target.value)}>{periods.map((p,i)=><option value={i+1} key={p}>{p}</option>)}</select></label></div></fieldset>
           <fieldset className="review"><legend><span>04</span> Review & run</legend><div className="metrics"><div><b>{format(estimate.rows)}</b><small>estimated rows</small></div><div><b>{format(estimate.reportingUnits)}</b><small>reporting units · {format(estimate.rtos)} RTOs in scope</small></div><div><b>{format(estimate.reports)}</b><small>dashboard reports</small></div><div><b>{estimate.days}</b><small>minimum calendar days · ≈{formatDuration(estimate.seconds)} active runtime</small></div></div>{estimate.errors.length?<div className="warning blocked">{estimate.errors.map(e=><p key={e}>{e}</p>)}</div>:<div className="warning">{rtoMode==="state_total"?"Fast state-total plan: all RTOs are combined within each selected state.":"Detailed RTO plan: each public office is collected separately."} Runtime includes expected Vaahan refresh time; actual availability can vary.</div>}
             <div className={`bridgeStatus ${bridge}`}><span><i/>SECURE LOCAL COMPANION</span><b>{bridge==="checking"?"CHECKING":bridge==="online"?"PAIRED":"NOT PAIRED"}</b><p>{bridgeMessage}</p>{bridge==="offline"&&<div className="pairingEntry"><label htmlFor="pairing-code">PAIRING CODE</label><input id="pairing-code" inputMode="text" autoComplete="off" spellCheck={false} maxLength={9} placeholder="ABCD-1234" value={pairingCode} onChange={e=>setPairingCode(formatPairingCode(e.target.value))}/><button type="button" disabled={normalizePairingCode(pairingCode).length!==8} onClick={()=>void checkBridge()}>PAIR SECURELY</button></div>}</div>
-            <label className="consent"><input type="checkbox" checked={consent} onChange={e=>setConsent(e.target.checked)}/><span>I understand registrations are a sales proxy and the collector must stop on CAPTCHA, rate limits or access challenges.</span></label><button className="button primary wide" disabled={!allowed||starting} onClick={()=>void startCollection()}>{starting?"Starting secure collector…":"Start minimized background collection"}</button><div className="automationNote"><b>AFTER YOU PRESS START</b><span>Rows are de-duplicated at every checkpoint. Temporary browser or dashboard failures retry twice from the last completed report. Daily-cap waiting resumes after midnight India time.</span></div><a className="button secondary wide" href="/vaahan-safe-collector/vaahan-safe-companion.zip" download>Download free Windows companion</a><button className="button secondary wide" type="button" onClick={downloadPlan}>Download configuration only</button><p className="bridgeHint">First use: download and extract the companion, run <strong>install.ps1</strong> once, then keep <strong>start.ps1</strong> open. Open the local control room, copy its restart-scoped pairing code here, and allow local-network access if asked. <a href="/vaahan-safe-collector/vaahan-safe-companion.zip.sha256" target="_blank">Verify SHA-256 checksum.</a></p><a className="localLink" href={BRIDGE_URL}>Open local control room & copy pairing code →</a>
-            {job&&<div className={`jobMonitor ${job.status}`} aria-live="polite"><div className="jobTitle"><span>ACTIVE JOB / {job.id}</span><b>{job.status.toUpperCase()}</b></div><p>{job.current||"Preparing collection…"}</p><div className="progressTrack"><i style={{width:`${Math.min(100,Math.round((job.completedReports/Math.max(1,job.estimate.reportRequests))*100))}%`}}/></div><div className="jobStats"><span><b>{format(job.completedReports)}</b> / {format(job.estimate.reportRequests)} reports</span><span><b>{format(job.collectedRows)}</b> rows collected</span></div><div className="etaGrid"><span><small>ACTIVE TIME LEFT</small><b>{job.estimatedRemainingActiveSeconds?formatDuration(job.estimatedRemainingActiveSeconds):"Complete"}</b></span><span><small>MINIMUM DAYS LEFT</small><b>{job.estimatedRemainingDays}</b></span><span><small>AUTO RECOVERIES</small><b>{job.autoRecoveries||0}</b></span><span><small>ADAPTIVE PAUSE</small><b>{job.adaptiveDelaySeconds?`+${job.adaptiveDelaySeconds}s`:"Base"}</b></span></div>{job.error&&<div className="jobError">{job.error}</div>}<div className="jobActions">{["starting","running","waiting","recovering"].includes(job.status)&&<button type="button" onClick={()=>void stopJob()}>STOP SAFELY</button>}{["paused","stopped"].includes(job.status)&&<button type="button" onClick={()=>void resumeJob()}>RESUME</button>}<button type="button" onClick={()=>void downloadExport(output)}>DOWNLOAD {output.toUpperCase()}</button></div></div>}
+            <label className="consent"><input type="checkbox" checked={consent} onChange={e=>setConsent(e.target.checked)}/><span>I understand registrations are a sales proxy and the collector must stop on CAPTCHA, rate limits or access challenges.</span></label><button className="button primary wide" disabled={!allowed||starting} onClick={()=>void startCollection()}>{starting?"Starting secure collector…":"Start minimized background collection"}</button><div className="automationNote"><b>AFTER YOU PRESS START</b><span>Rows are de-duplicated at every checkpoint. Temporary browser or dashboard failures retry twice from the last completed report. Daily-cap waiting resumes after midnight India time.</span></div><label className="downloadPreference"><input type="checkbox" checked={autoDownload} onChange={e=>setAutoDownload(e.target.checked)}/><span><b>AUTOMATIC DATA DOWNLOAD</b><small>Save the selected {output.toUpperCase()} file automatically when collection completes. The file is generated locally and the manual button remains available.</small></span></label><a className="button secondary wide" href="/vaahan-safe-collector/vaahan-safe-companion.zip" download>Download free Windows companion</a><button className="button secondary wide" type="button" onClick={downloadPlan}>Download configuration only</button><p className="bridgeHint">First use: download and extract the companion, run <strong>install.ps1</strong> once, then keep <strong>start.ps1</strong> open. In the local control room, press <strong>Open planner & pair</strong>. No code typing is normally required. <a href="/vaahan-safe-collector/vaahan-safe-companion.zip.sha256" target="_blank">Verify SHA-256 checksum.</a></p><a className="localLink" href={BRIDGE_URL}>Open local control room & pair in one click →</a>
+            {job&&<div className={`jobMonitor ${job.status}`} aria-live="polite"><div className="jobTitle"><span>ACTIVE JOB / {job.id}</span><b>{job.status.toUpperCase()}</b></div><p>{job.current||"Preparing collection…"}</p><div className="progressTrack"><i style={{width:`${Math.min(100,Math.round((job.completedReports/Math.max(1,job.estimate.reportRequests))*100))}%`}}/></div><div className="jobStats"><span><b>{format(job.completedReports)}</b> / {format(job.estimate.reportRequests)} reports</span><span><b>{format(job.collectedRows)}</b> rows collected</span></div><div className="etaGrid"><span><small>ACTIVE TIME LEFT</small><b>{job.estimatedRemainingActiveSeconds?formatDuration(job.estimatedRemainingActiveSeconds):"Complete"}</b></span><span><small>MINIMUM DAYS LEFT</small><b>{job.estimatedRemainingDays}</b></span><span><small>AUTO RECOVERIES</small><b>{job.autoRecoveries||0}</b></span><span><small>ADAPTIVE PAUSE</small><b>{job.adaptiveDelaySeconds?`+${job.adaptiveDelaySeconds}s`:"Base"}</b></span></div>{job.error&&<div className="jobError">{job.error}</div>}{downloadNotice&&<div className="downloadReady">{downloadNotice}</div>}<div className="jobActions">{["starting","running","waiting","recovering"].includes(job.status)&&<button type="button" onClick={()=>void stopJob()}>STOP SAFELY</button>}{["paused","stopped"].includes(job.status)&&<button type="button" onClick={()=>void resumeJob()}>RESUME</button>}<button className="primaryDownload" type="button" disabled={!job.collectedRows} onClick={()=>void downloadExport(output)}>{job.status==="complete"?"DOWNLOAD COMPLETE DATA":"DOWNLOAD DATA SO FAR"} · {output.toUpperCase()}</button></div></div>}
           </fieldset>
         </div>
       </section>
 
-      <section id="process" className="section process"><div className="sectionHead"><div><p className="eyebrow"><span>03</span> COLLECTION PROCESS</p><h2>One start.<br/>Self-healing checkpoints.</h2></div><p>The companion handles routine recovery after launch. Keep the computer awake and the companion running; intervene only if Vaahan presents a CAPTCHA, rate limit, access restriction, or a genuine dashboard redesign.</p></div><div className="processRail"><article><span>01 / CONNECT</span><b>Start & pair</b><p>Run the free local companion, copy its restart-scoped code, and pair this official planner.</p></article><article><span>02 / VALIDATE</span><b>Review the estimate</b><p>The planner includes expected refresh time and blocks plans above 1,00,000 rows.</p></article><article><span>03 / COLLECT</span><b>Verified refresh</b><p>Chrome or Edge waits for Vaahan&apos;s actual report response instead of relying on a fixed timer.</p></article><article><span>04 / RECOVER</span><b>Retry & adapt</b><p>Temporary failures retry twice from a de-duplicated checkpoint; slow responses increase the pause.</p></article><article><span>05 / EXPORT</span><b>Live ETA & download</b><p>The monitor learns from observed speed and exports complete or partial local results.</p></article></div><div className="processCaution"><b>Manual action is intentionally retained for safeguards.</b><span>The tool never retries CAPTCHA or rate limits, bypasses access controls, keeps a stopped PC awake, or guesses after a genuine Vaahan page redesign.</span></div></section>
+      <section id="process" className="section process"><div className="sectionHead"><div><p className="eyebrow"><span>03</span> COLLECTION PROCESS</p><h2>One start.<br/>Self-healing checkpoints.</h2></div><p>The companion handles routine recovery after launch. Keep the computer awake and the companion running; intervene only if Vaahan presents a CAPTCHA, rate limit, access restriction, or a genuine dashboard redesign.</p></div><div className="processRail"><article><span>01 / CONNECT</span><b>One-click pair</b><p>Start the local companion and press Open planner & pair. The same secure code and token checks run automatically.</p></article><article><span>02 / VALIDATE</span><b>Review the estimate</b><p>The planner includes expected refresh time and blocks plans above 1,00,000 rows.</p></article><article><span>03 / COLLECT</span><b>Verified refresh</b><p>Chrome or Edge waits for Vaahan&apos;s actual report response instead of relying on a fixed timer.</p></article><article><span>04 / RECOVER</span><b>Retry & adapt</b><p>Temporary failures retry twice from a de-duplicated checkpoint; slow responses increase the pause.</p></article><article><span>05 / EXPORT</span><b>Automatic download</b><p>The selected file is saved when collection completes; a clear manual and partial-download fallback remains available.</p></article></div><div className="processCaution"><b>Manual action is intentionally retained for safeguards.</b><span>The tool never retries CAPTCHA or rate limits, bypasses access controls, keeps a stopped PC awake, or guesses after a genuine Vaahan page redesign.</span></div></section>
 
       <section id="downloads" className="section downloads"><div className="sectionHead"><div><p className="eyebrow"><span>04</span> DOWNLOAD OPTIONS</p><h2>Choose the right<br/>delivery format.</h2></div><button className="button annexureButton" type="button" onClick={()=>setAnnexureOpen(true)}>Open data annexure</button></div><div className="downloadGrid"><article><span>XLSX</span><h3>Analysis workbook</h3><p>Best for Excel or Google Sheets. Includes a Summary sheet with scope and policy plus a filterable Data sheet.</p><small>Recommended for most users · structured rows · timestamps retained</small></article><article><span>CSV</span><h3>Raw interoperable data</h3><p>Best for Power BI, databases, Python, R, or joining with other datasets. One flat, machine-readable table.</p><small>Lightest file · fastest import · no workbook formatting</small></article><article><span>PDF</span><h3>Shareable snapshot</h3><p>Best for review or a small annexure. Available only when the collected result contains no more than 2,000 rows.</p><small>Human-readable · fixed layout · not ideal for further analysis</small></article><article><span>PARTIAL</span><h3>Checkpoint export</h3><p>Use the active job monitor or local control room to download rows already collected without stopping the job.</p><small>Recovery-friendly · useful during multi-day collections</small></article></div><p className="downloadNote"><b>Configuration JSON is not collected data.</b> It only saves the choices needed to recreate a plan. Use XLSX, CSV, or PDF for actual Vaahan results.</p></section>
 

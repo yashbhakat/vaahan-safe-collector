@@ -21,7 +21,11 @@ test("renders the production planner and secure pairing workflow", async () => {
   assert.match(page, /X-Collector-Pairing-Code/);
   assert.match(page, /PAIR SECURELY/);
   assert.match(page, /normalizePairingCode/);
+  assert.match(page, /URLSearchParams\(window\.location\.hash/);
+  assert.match(page, /window\.history\.replaceState/);
+  assert.match(page, /AUTOMATIC DATA DOWNLOAD/);
   assert.match(css, /\.pairingEntry/);
+  assert.match(css, /\.downloadPreference/);
 });
 
 test("ships the downloadable companion with a matching checksum", async () => {

@@ -2,4 +2,4 @@
 2:I[90271,["/vaahan-safe-collector/_next/static/chunks/0whs1ovvduo0a.js","/vaahan-safe-collector/_next/static/chunks/0d8o0x2y_4x8x.js"],"default"]
 3:I[98608,["/vaahan-safe-collector/_next/static/chunks/0whs1ovvduo0a.js","/vaahan-safe-collector/_next/static/chunks/0d8o0x2y_4x8x.js"],"default"]
 4:[]
-0:{"rsc":["$","$1","c",{"children":[null,["$","$L2",null,{"parallelRouterKey":"children","template":["$","$L3",null,{}]}]]}],"isPartial":false,"staleTime":300,"varyParams":"$W4","buildId":"IIsGL_PpYYO667onCLygz"}
+0:{"rsc":["$","$1","c",{"children":[null,["$","$L2",null,{"parallelRouterKey":"children","template":["$","$L3",null,{}]}]]}],"isPartial":false,"staleTime":300,"varyParams":"$W4","buildId":"NHUvgqLI9UhIIopVOocGv"}
